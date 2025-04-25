@@ -4,14 +4,7 @@ on:
   pull_request:
 
 jobs:
-  check_skip_tests:
-    uses: ./.github/workflows/check_skip_tests.yml
-    with:
-      head-sha: ${{ github.event.pull_request.head.sha }}
-      excluded-dirs: 'docs/**,tests/**,examples/**'
-
   unit-test-python:
-    if: ${{ needs.check_skip_tests.outputs.skip_tests == 'false' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -31,7 +24,6 @@ jobs:
       PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
-        if: ${{ needs.check_skip_tests.outputs.skip_tests == 'false' }}
       - name: Setup Python
         id: setup-python
         uses: actions/setup-python@v5
@@ -50,7 +42,6 @@ jobs:
         run: uv cache prune --ci
 
   unit-test-ui:
-    if: ${{ needs.check_skip_tests.outputs.skip_tests == 'false' }}
     runs-on: ubuntu-latest
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -62,7 +62,6 @@ from feast.errors import (
 from feast.feast_object import FeastObject
 from feast.feature_service import FeatureService
 from feast.feature_view import DUMMY_ENTITY, DUMMY_ENTITY_NAME, FeatureView
-from feast.field import Field
 from feast.inference import (
     update_data_sources_with_inferred_event_timestamp_col,
     update_feature_views_with_inferred_features_and_entities,
@@ -91,7 +90,7 @@ from feast.ssl_ca_trust_store_setup import configure_ca_trust_store_env_variable
 from feast.stream_feature_view import StreamFeatureView
 from feast.transformation.pandas_transformation import PandasTransformation
 from feast.transformation.python_transformation import PythonTransformation
-from feast.utils import _utc_now
+from feast.utils import _get_feature_view_vector_field_metadata, _utc_now
 
 warnings.simplefilter("once", DeprecationWarning)
 
@@ -856,7 +855,6 @@ class FeatureStore:
         if not isinstance(objects, Iterable):
             objects = [objects]
         assert isinstance(objects, list)
-
         if not objects_to_delete:
             objects_to_delete = []
 
@@ -1464,6 +1462,7 @@ class FeatureStore:
         df: pd.DataFrame,
         allow_registry_cache: bool = True,
         to: PushMode = PushMode.ONLINE,
+        transform_on_write: bool = True,
     ):
         """
         Push features to a push source. This updates all the feature views that have the push source as stream source.
@@ -1473,13 +1472,17 @@ class FeatureStore:
             df: The data being pushed.
             allow_registry_cache: Whether to allow cached versions of the registry.
             to: Whether to push to online or offline store. Defaults to online store only.
+            transform_on_write: Whether to transform the data before pushing.
         """
         for fv in self._fvs_for_push_source_or_raise(
             push_source_name, allow_registry_cache
         ):
             if to == PushMode.ONLINE or to == PushMode.ONLINE_AND_OFFLINE:
                 self.write_to_online_store(
-                    fv.name, df, allow_registry_cache=allow_registry_cache
+                    fv.name,
+                    df,
+                    allow_registry_cache=allow_registry_cache,
+                    transform_on_write=transform_on_write,
                 )
             if to == PushMode.OFFLINE or to == PushMode.ONLINE_AND_OFFLINE:
                 self.write_to_offline_store(
@@ -1521,6 +1524,7 @@ class FeatureStore:
         df: Optional[pd.DataFrame] = None,
         inputs: Optional[Union[Dict[str, List[Any]], pd.DataFrame]] = None,
         allow_registry_cache: bool = True,
+        transform_on_write: bool = True,
     ):
         feature_view_dict = {
             fv_proto.name: fv_proto
@@ -1549,10 +1553,23 @@ class FeatureStore:
                 except Exception as _:
                     raise DataFrameSerializationError(df)
 
+        if feature_view.features[0].vector_index and df is not None:
+            fv_vector_feature_name = feature_view.features[0].name
+            df_vector_feature_index = df.columns.get_loc(fv_vector_feature_name)
+            if feature_view.features[0].vector_length != 0:
+                if (
+                    df.shape[df_vector_feature_index]
+                    > feature_view.features[0].vector_length
+                ):
+                    raise ValueError(
+                        f"The dataframe for {fv_vector_feature_name} column has {df.shape[1]} vectors which is greater than expected (i.e {feature_view.features[0].vector_length}) by feature view {feature_view.name}."
+                    )
+
         # # Apply transformations if this is an OnDemandFeatureView with write_to_online_store=True
         if (
             isinstance(feature_view, OnDemandFeatureView)
             and feature_view.write_to_online_store
+            and transform_on_write
         ):
             if (
                 feature_view.mode == "python"
@@ -1638,6 +1655,7 @@ class FeatureStore:
         df: Optional[pd.DataFrame] = None,
         inputs: Optional[Union[Dict[str, List[Any]], pd.DataFrame]] = None,
         allow_registry_cache: bool = True,
+        transform_on_write: bool = True,
     ):
         """
         Persists a dataframe to the online store.
@@ -1647,6 +1665,7 @@ class FeatureStore:
             df: The dataframe to be persisted.
             inputs: Optional the dictionary object to be written
             allow_registry_cache (optional): Whether to allow retrieving feature views from a cached registry.
+            transform_on_write (optional): Whether to transform the data before pushing.
         """
 
         feature_view, df = self._get_feature_view_and_df_for_online_write(
@@ -1654,6 +1673,7 @@ class FeatureStore:
             df=df,
             inputs=inputs,
             allow_registry_cache=allow_registry_cache,
+            transform_on_write=transform_on_write,
         )
         provider = self._get_provider()
         provider.ingest_df(feature_view, df)
@@ -2492,16 +2512,3 @@ def _validate_data_sources(data_sources: List[DataSource]):
             raise DataSourceRepeatNamesException(case_insensitive_ds_name)
         else:
             ds_names.add(case_insensitive_ds_name)
-
-
-def _get_feature_view_vector_field_metadata(
-    feature_view: FeatureView,
-) -> Optional[Field]:
-    vector_fields = [field for field in feature_view.schema if field.vector_index]
-    if len(vector_fields) > 1:
-        raise ValueError(
-            f"Feature view {feature_view.name} has multiple vector fields. Only one vector field per feature view is supported."
-        )
-    if not vector_fields:
-        return None
-    return vector_fields[0]

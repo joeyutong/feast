@@ -874,7 +874,8 @@ class TestOnDemandTransformationsWithWrites(unittest.TestCase):
             assert driver_stats_fv.entity_columns == []
 
             ODFV_STRING_CONSTANT = "guaranteed constant"
-            ODFV_OTHER_STRING_CONSTANT = "somethign else"
+            ODFV_OTHER_STRING_CONSTANT = "something else"
+            ODFV_UNTRANSFORMED_STRING_CONSTANT = "also something else"
 
             @on_demand_feature_view(
                 entities=[driver],
@@ -1069,6 +1070,52 @@ class TestOnDemandTransformationsWithWrites(unittest.TestCase):
             assert online_odfv_python_response["string_constant"] != [
                 ODFV_OTHER_STRING_CONSTANT
             ]
+            odfv_entity_rows_to_write_no_transform = [
+                {
+                    "driver_id": 1003,
+                    "counter": 10,
+                    "conv_rate": 0.25,
+                    "acc_rate": 0.50,
+                    "input_datetime": current_datetime,
+                    "string_constant": ODFV_UNTRANSFORMED_STRING_CONSTANT,
+                }
+            ]
+            odfv_entity_rows_to_read_no_transform = [
+                {
+                    "driver_id": 1003,
+                    "conv_rate_plus_acc": 7,  # note how this is not the correct value and would be calculate on demand
+                    "conv_rate": 0.25,
+                    "acc_rate": 0.50,
+                    "counter": 0,
+                    "input_datetime": current_datetime,
+                    "string_constant": ODFV_UNTRANSFORMED_STRING_CONSTANT,
+                }
+            ]
+            print("storing ODFV features")
+            self.store.write_to_online_store(
+                feature_view_name="python_stored_writes_feature_view",
+                df=odfv_entity_rows_to_write_no_transform,
+                transform_on_write=False,
+            )
+            online_odfv_python_response_no_transform = self.store.get_online_features(
+                entity_rows=odfv_entity_rows_to_read_no_transform,
+                features=[
+                    "python_stored_writes_feature_view:conv_rate_plus_acc",
+                    "python_stored_writes_feature_view:current_datetime",
+                    "python_stored_writes_feature_view:counter",
+                    "python_stored_writes_feature_view:input_datetime",
+                    "python_stored_writes_feature_view:string_constant",
+                ],
+            ).to_dict()
+            # note these are approximately correct by
+            assert online_odfv_python_response_no_transform == {
+                "driver_id": [1003],
+                "counter": [10],
+                "conv_rate_plus_acc": [None],
+                "input_datetime": [current_datetime.replace(microsecond=0)],
+                "string_constant": [ODFV_UNTRANSFORMED_STRING_CONSTANT],
+                "current_datetime": [None],
+            }
 
     def test_stored_writes_with_explode(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -1079,9 +1126,7 @@ class TestOnDemandTransformationsWithWrites(unittest.TestCase):
                     provider="local",
                     entity_key_serialization_version=3,
                     online_store=SqliteOnlineStoreConfig(
-                        path=os.path.join(data_dir, "online.db"),
-                        vector_enabled=True,
-                        vector_len=5,
+                        path=os.path.join(data_dir, "online.db"), vector_enabled=True
                     ),
                 )
             )
@@ -1131,6 +1176,7 @@ class TestOnDemandTransformationsWithWrites(unittest.TestCase):
                         name="vector",
                         dtype=Array(Float32),
                         vector_index=True,
+                        vector_length=5,
                         vector_search_metric="L2",
                     ),
                 ],
@@ -1313,7 +1359,7 @@ class TestOnDemandTransformationsWithWrites(unittest.TestCase):
         from transformers import AutoTokenizer
 
         EMBED_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
-        VECTOR_LEN = 10
+        VECTOR_LENGTH = 10
         MAX_TOKENS = 5  # Small token limit for demonstration
         tokenizer = AutoTokenizer.from_pretrained(EMBED_MODEL_ID)
         chunker = HybridChunker(
@@ -1330,7 +1376,6 @@ class TestOnDemandTransformationsWithWrites(unittest.TestCase):
                     online_store=SqliteOnlineStoreConfig(
                         path=os.path.join(data_dir, "online.db"),
                         vector_enabled=True,
-                        vector_len=VECTOR_LEN,
                     ),
                 )
             )
@@ -1350,7 +1395,7 @@ class TestOnDemandTransformationsWithWrites(unittest.TestCase):
             )
 
             def embed_chunk(input_string) -> dict[str, list[float]]:
-                output = {"query_embedding": [0.5] * VECTOR_LEN}
+                output = {"query_embedding": [0.5] * VECTOR_LENGTH}
                 return output
 
             input_request_pdf = RequestSource(
@@ -1374,6 +1419,7 @@ class TestOnDemandTransformationsWithWrites(unittest.TestCase):
                         name="vector",
                         dtype=Array(Float32),
                         vector_index=True,
+                        vector_length=VECTOR_LENGTH,
                         vector_search_metric="L2",
                     ),
                 ],
